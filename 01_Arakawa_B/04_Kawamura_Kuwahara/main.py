@@ -25,6 +25,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+import pyevtk
+
 sys.path.append(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
@@ -33,8 +35,8 @@ from reference import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--dx", type=float, default=1e-2, help="grid spacing")
-parser.add_argument("-r", "--Re", type=float, default=100., help="Reynolds number")
-parser.add_argument("-t", "--time", type=float, default=200., help="maximum simulation time")
+parser.add_argument("-r", "--Re", type=float, default=1e3, help="Reynolds number")
+parser.add_argument("-t", "--time", type=float, default=120., help="maximum simulation time")
 parser.add_argument("-u", "--u_tol", type=float, default=1e-6, help="convergence tolerance for velocity")
 parser.add_argument("-p", "--p_tol", type=float, default=1e-6, help="convergence tolerance for pressure")
 parser.add_argument("-i", "--it_max", type=int, default=int(5e3), help="maximum iteration for PPE")
@@ -43,11 +45,17 @@ args = parser.parse_args()
 
 
 def plot_setting():
-    # visualization setting
+    plt.style.use("default")
+    # plt.style.use("seaborn-v0_8-deep")
+    plt.style.use("seaborn-v0_8-poster")   # paper / notebook / talk / poster
     plt.rcParams["font.family"] = "Times New Roman"
     plt.rcParams["mathtext.fontset"] = "cm"
-    plt.rcParams["legend.framealpha"] = 1.
     plt.rcParams["figure.figsize"] = (7, 5)
+    plt.rcParams["figure.autolayout"] = True
+    # plt.rcParams["axes.grid"] = True
+    # plt.rcParams["grid.alpha"] = .3
+    plt.rcParams["legend.framealpha"] = 1.
+    plt.rcParams["legend.facecolor"] = "w"
     plt.rcParams["savefig.dpi"] = 300
 
 
@@ -82,7 +90,7 @@ def get_advection(u, v, w, dx, dy, dz, beta=1./4.):
     return advc_x, advc_y, advc_z
 
 
-def get_diffusion(u, v, w, dx, dy, dz, k, Cs=.1):
+def get_diffusion(u, v, w, dx, dy, dz, nu, Cs=.1):
     # Smagorinsky model
     # strain rate tensor
     u_x = (u[2:-2, 2:-2, 2:-2] - u[1:-3, 2:-2, 2:-2]) / dx
@@ -97,7 +105,12 @@ def get_diffusion(u, v, w, dx, dy, dz, k, Cs=.1):
     S11, S12, S13 = u_x, .5 * (u_y + v_x), .5 * (u_z + w_x)
     S21, S22, S23 = S12, v_y, .5 * (v_z + w_y)
     S31, S32, S33 = S13, S23, w_z
-    S = np.sqrt(2. * (S11**2 + S22**2 + S33**2 + 2. * (S12**2 + S13**2 + S23**2)))
+    S = np.sqrt(
+        2. * (
+            S11**2 + S22**2 + S33**2
+            + 2. * (S12**2 + S13**2 + S23**2)
+        )
+    )
 
     # # van Driest damping function
     # kappa = .41
@@ -108,29 +121,30 @@ def get_diffusion(u, v, w, dx, dy, dz, k, Cs=.1):
     # Smagorinsky model
     ls = Cs * dx
     l0 = ls   # min(lm, ls)
-    kt = l0**2 * S
-    k += kt
+    nu_t = l0**2 * S
+    nu_eff = nu + nu_t
+    print(f"   >>> nu_eff -> min: {nu_eff.min():.6e}, max: {nu_eff.max():.6e}, mean: {nu_eff.mean():.6e}")
 
     # diffusion of u
     u_xx = (u[3:-1, 2:-2, 2:-2] - 2. * u[2:-2, 2:-2, 2:-2] + u[1:-3, 2:-2, 2:-2]) / dx**2
     u_yy = (u[2:-2, 3:-1, 2:-2] - 2. * u[2:-2, 2:-2, 2:-2] + u[2:-2, 1:-3, 2:-2]) / dy**2
     u_zz = (u[2:-2, 2:-2, 3:-1] - 2. * u[2:-2, 2:-2, 2:-2] + u[2:-2, 2:-2, 1:-3]) / dz**2
     lap_u = u_xx + u_yy + u_zz
-    diff_x = k * lap_u
+    diff_x = nu_eff * lap_u
 
     # diffusion of v
     v_xx = (v[3:-1, 2:-2, 2:-2] - 2. * v[2:-2, 2:-2, 2:-2] + v[1:-3, 2:-2, 2:-2]) / dx**2
     v_yy = (v[2:-2, 3:-1, 2:-2] - 2. * v[2:-2, 2:-2, 2:-2] + v[2:-2, 1:-3, 2:-2]) / dy**2
     v_zz = (v[2:-2, 2:-2, 3:-1] - 2. * v[2:-2, 2:-2, 2:-2] + v[2:-2, 2:-2, 1:-3]) / dz**2
     lap_v = v_xx + v_yy + v_zz
-    diff_y = k * lap_v
+    diff_y = nu_eff * lap_v
 
     # diffusion of w
     w_xx = (w[3:-1, 2:-2, 2:-2] - 2. * w[2:-2, 2:-2, 2:-2] + w[1:-3, 2:-2, 2:-2]) / dx**2
     w_yy = (w[2:-2, 3:-1, 2:-2] - 2. * w[2:-2, 2:-2, 2:-2] + w[2:-2, 1:-3, 2:-2]) / dy**2
     w_zz = (w[2:-2, 2:-2, 3:-1] - 2. * w[2:-2, 2:-2, 2:-2] + w[2:-2, 2:-2, 1:-3]) / dz**2
     lap_w = w_xx + w_yy + w_zz
-    diff_z = k * lap_w
+    diff_z = nu_eff * lap_w
 
     return diff_x, diff_y, diff_z
 
@@ -177,12 +191,6 @@ def Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, tol):
                         )
 
         # boundary condition (for Arakawa B-type grid)
-        # p[0,  1:-1, 1:-1] = p[1,  1:-1, 1:-1]   # x = xmin plane
-        # p[-1, 1:-1, 1:-1] = p[-2, 1:-1, 1:-1]   # x = xmax plane
-        # p[1:-1,  0, 1:-1] = p[1:-1,  1, 1:-1]   # y = ymin plane
-        # p[1:-1, -1, 1:-1] = p[1:-1, -2, 1:-1]   # y = ymax plane
-        # p[1:-1, 1:-1,  0] = p[1:-1, 1:-1,  1]   # z = zmin plane
-        # p[1:-1, 1:-1, -1] = p[1:-1, 1:-1, -2]   # z = zmax plane
         p[0,  :, :] = p[1,  :, :]   # x = xmin plane
         p[-1, :, :] = p[-2, :, :]   # x = xmax plane
         p[:,  0, :] = p[:,  1, :]   # y = ymin plane
@@ -192,11 +200,20 @@ def Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, tol):
         p[1, Ny//2, 1] = 0.
         # p[1, 1, 1] = 0.   # (x, y, z) = (xmin, ymin, zmin) corner
 
+        # # periodic boundary conditions
+        # p[0,  :, :] = p[-2, :, :]   # xmin = xmax
+        # p[-1, :, :] = p[1,  :, :]   # xmax = xmin
+        # p[:,  0, :] = p[:,  1, :]   # y = ymin plane (Neumann)
+        # p[:, -1, :] = p[:, -2, :]   # y = ymax plane (Neumann)
+        # p[:, :,  0] = p[:, :,  1]   # z = zmin plane (Neumann)
+        # p[:, :, -1] = p[:, :, -2]   # z = zmax plane (Neumann)
+
         # converged?
         p_res = np.sqrt(np.sum((p - p_old)**2)) / np.sqrt(np.sum(p_old**2))
         if it % 1000 == 0:
             print(f"   >>> PPE -> it: {it}, p_res: {p_res:.6e}")
         if p_res < tol:
+            print(f"   >>> PPE -> it: {it}, p_res: {p_res:.6e}")
             print(f"   >>> PPE converged")
             break
     return p
@@ -235,6 +252,7 @@ def main():
     Re = args.Re
 
     dir_res = f"Re{Re:.0f}"
+    # dir_res = f"Re{Re:.0f}_periodic"
     os.makedirs(dir_res, exist_ok=True)
 
     # domain
@@ -243,6 +261,11 @@ def main():
     x = np.arange(0. - dx, Lx + 2. * dx, dx)   # long stencil
     y = np.arange(0. - dy, Ly + 2. * dy, dy)
     z = np.arange(0. - dz, Lz + 2. * dz, dz)
+    # print(f"x: {x}")
+    # print(f"y: {y}")
+    # print(f"z: {z}")
+    # print(f"z[1:-1]: {z[1:-1]}")
+    # exit()
     Nx, Ny, Nz = len(x), len(y), len(z)
     X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
     # print(X[:,0,0] == x)
@@ -258,7 +281,7 @@ def main():
         zlabel=r"$z$",
     )
     plt.tight_layout()
-    plt.savefig(os.path.join(dir_res, f"nodes.png"), dpi=300)
+    plt.savefig(os.path.join(dir_res, f"nodes.png"))
     plt.close()
 
     plt.figure()
@@ -292,7 +315,7 @@ def main():
     plt.scatter(Z[:,:,0], X[:,:,0])
     plt.title("Z[:,:,0], X[:,:,0]")
     plt.tight_layout()
-    plt.savefig(os.path.join(dir_res, f"table.png"), dpi=300)
+    plt.savefig(os.path.join(dir_res, f"table.png"))
     plt.close()
 
     # timestep
@@ -319,7 +342,6 @@ def main():
     # reference solutions
     ref_Jiang = Jiang(Re)
     ref_Wong = Wong(Re)
-
     df_Jiang = pd.DataFrame(ref_Jiang)
     df_Wong = pd.DataFrame(ref_Wong)
 
@@ -339,6 +361,12 @@ def main():
     dir_prs_slc.mkdir(exist_ok=True)
     dir_vel_qvr.mkdir(exist_ok=True)
     dir_vor_slc.mkdir(exist_ok=True)
+
+    dir_npz = dir_res / "npz"
+    dir_npz.mkdir(exist_ok=True)
+
+    dir_vtk = dir_res / "vtk"
+    dir_vtk.mkdir(exist_ok=True)
 
     # main loop
     n = 0
@@ -396,6 +424,21 @@ def main():
         u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
         u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
 
+        # # periodic boundary conditions
+        # u[ 0,  :, :], v[ 0,  :, :], w[ 0,  :, :] = u[-4,  :, :], v[-4,  :, :], w[-4,  :, :]   # x = xmin plane
+        # u[ 1,  :, :], v[ 1,  :, :], w[ 1,  :, :] = u[-3,  :, :], v[-3,  :, :], w[-3,  :, :]   # x = xmin plane
+        # u[-1,  :, :], v[-1,  :, :], w[-1,  :, :] = u[ 3,  :, :], v[ 3,  :, :], w[ 3,  :, :]   # x = xmax plane
+        # u[-2,  :, :], v[-2,  :, :], w[-2,  :, :] = u[ 2,  :, :], v[ 2,  :, :], w[ 2,  :, :]   # x = xmax plane
+        # u[:, -2:, :], v[:, -2:, :], w[:, -2:, :] = 0., 0., 0.   # y = ymax plane
+        # u[:,  :2, :], v[:,  :2, :], w[:,  :2, :] = 0., 0., 0.   # y = ymin plane
+        # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
+        # u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
+
+        # # parabola
+        # U = (X - 0.) * (1. - X) * (Y - 0.) * (1. - Y)
+        # U /= U.max()
+        # # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = U[:, :, -2:], 0., 0.   # z = zmax plane
+
         # converged?
         n += 1
         t += dt
@@ -406,8 +449,9 @@ def main():
         w_res = np.sqrt(np.sum((w - w_old)**2)) / np.sqrt(np.sum(w_old**2))
         print(f"\n****************************************************************")
         print(f">>> main")
-        print(f">>> it: {n:d}, t: {t:.3f}, dt: {dt:.3e}, C: {np.max(C):.3f}, D: {np.max(D):.3f}")
-        print(f">>> u_res: {u_res:.3e}, v_res: {v_res:.3e}, w_res: {w_res:.3e}")
+        print(f">>> it: {n:d}, t: {t:.3f}/{args.time:.3f}, dx: {dx:.3e}, dt: {dt:.3e}, C: {np.max(C):.3f}, D: {np.max(D):.3f}")
+        print(f">>> Reynolds number: {Re:.3e}, Cs: {args.Cs:.3f}")
+        print(f">>> u_res: {u_res:.6e}, v_res: {v_res:.6e}, w_res: {w_res:.6e}")
         print(f"****************************************************************")
         u_res = max(u_res, v_res, w_res)
         if u_res < u_tol:
@@ -420,25 +464,103 @@ def main():
         # plot
         if n % 1000 == 0:
             # velocity
-            fig = plt.figure()
-            ax = fig.add_subplot(111, projection="3d")
+            fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
             vel_norm = np.sqrt(u**2 + v**2 + w**2)
             cntr = ax.scatter(
-                X[1:-1, 1:-1, 1:-1], Y[1:-1, 1:-1, 1:-1], Z[1:-1, 1:-1, 1:-1], 
-                c=vel_norm[1:-1, 1:-1, 1:-1], 
-                vmin=0., vmax=1., cmap="turbo", marker="."
+                X[1:-1, Ny//2:-1, 1:-1], Y[1:-1, Ny//2:-1, 1:-1], Z[1:-1, Ny//2:-1, 1:-1], 
+                c=vel_norm[1:-1, Ny//2:-1, 1:-1], 
+                vmin=0., vmax=1., cmap="turbo", marker=".", alpha=.5
             )
-            fig.colorbar(cntr, shrink=.5, aspect=15)
+            # cntr = ax.scatter(
+            #     X[1:-1, 1:-1, 1:-1], Y[1:-1, 1:-1, 1:-1], Z[1:-1, 1:-1, 1:-1], 
+            #     c=vel_norm[1:-1, 1:-1, 1:-1], 
+            #     vmin=0., vmax=1., cmap="turbo", marker="."
+            # )
+            # fig.colorbar(cntr, shrink=.5, aspect=15)
+
+            # Add cube wireframe
+            cube_vertices = [
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # bottom face
+                [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]   # top face
+            ]
+            cube_edges = [
+                [0, 1], [1, 2], [2, 3], [3, 0],  # bottom face edges
+                [4, 5], [5, 6], [6, 7], [7, 4],  # top face edges
+                [0, 4], [1, 5], [2, 6], [3, 7]   # vertical edges
+            ]
+            for edge in cube_edges:
+                points = [cube_vertices[edge[0]], cube_vertices[edge[1]]]
+                ax.plot3D(*zip(*points), 'k-', alpha=.3, linewidth=.5)
+
             ax.set(
-                xlabel=r"$x$",
-                ylabel=r"$y$",
-                zlabel=r"$z$",
-                title=rf"$t$: {t:.2f}"
+                xticks=np.linspace(0., 1., 6),
+                yticks=np.linspace(0., 1., 6),
+                zticks=np.linspace(0., 1., 6),
+                xlim=(0., 1.),
+                ylim=(0., 1.),
+                zlim=(0., 1.),
+                # xlabel=r"$x$",
+                # ylabel=r"$y$",
+                # zlabel=r"$z$",
+                title=rf"$t = {t:.3f} \ [\text{{s}}]$",
             )
-            plt.tight_layout()
-            plt.savefig(dir_res / f"vel_norm.png", dpi=300)
-            plt.savefig(dir_vel / f"vel_norm_{n:04d}.png", dpi=300)
-            plt.close()
+            fig.tight_layout()
+            fig.savefig(dir_res / f"vel_norm.png")
+            fig.savefig(dir_vel / f"vel_norm_{n:06d}.png")
+            plt.close(fig)
+
+
+            fig, ax = plt.subplots(1, 3, figsize=(15, 4), subplot_kw={"projection": "3d"})
+
+            cntr = ax[0].scatter(
+                X[1:-1, 1:-1, 1:Nz//2], Y[1:-1, 1:-1, 1:Nz//2], Z[1:-1, 1:-1, 1:Nz//2],
+                c=vel_norm[1:-1, 1:-1, 1:Nz//2],
+                vmin=0., vmax=1., cmap="turbo", marker=".", alpha=.5
+            )
+            ax[0].set_title(rf"$z={Lz/2:.2f}$",)
+            cntr = ax[1].scatter(
+                X[1:-1, Ny//2:-1, 1:-1], Y[1:-1, Ny//2:-1, 1:-1], Z[1:-1, Ny//2:-1, 1:-1],
+                c=vel_norm[1:-1, Ny//2:-1, 1:-1],
+                vmin=0., vmax=1., cmap="turbo", marker=".", alpha=.5
+            )
+            ax[1].set_title(rf"$y={Ly/2:.2f}$",)
+            cntr = ax[2].scatter(
+                X[1:Nx//2, 1:-1, 1:-1], Y[1:Nx//2, 1:-1, 1:-1], Z[1:Nx//2, 1:-1, 1:-1],
+                c=vel_norm[1:Nx//2, 1:-1, 1:-1],
+                vmin=0., vmax=1., cmap="turbo", marker=".", alpha=.5
+            )
+            ax[2].set_title(rf"$x={Lx/2:.2f}$",)
+
+            # Add cube wireframe
+            cube_vertices = [
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # bottom face
+                [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]   # top face
+            ]
+            cube_edges = [
+                [0, 1], [1, 2], [2, 3], [3, 0],  # bottom face edges
+                [4, 5], [5, 6], [6, 7], [7, 4],  # top face edges
+                [0, 4], [1, 5], [2, 6], [3, 7]   # vertical edges
+            ]
+            for col in range(3):
+                for edge in cube_edges:
+                    points = [cube_vertices[edge[0]], cube_vertices[edge[1]]]
+                    ax[col].plot3D(*zip(*points), 'k-', alpha=.3, linewidth=.5)
+
+                ax[col].set(
+                    xlim=(0., 1.),
+                    ylim=(0., 1.),
+                    zlim=(0., 1.),
+                    # xlabel=r"$x$",
+                    # ylabel=r"$y$",
+                    # zlabel=r"$z$",
+                )
+                ax[col].set_axis_off()
+            fig.suptitle(rf"$t = {t:.3f} \ [\text{{s}}]$",)
+            fig.tight_layout()
+            fig.savefig(dir_res / f"vel_norm_3D_slice.png")
+            fig.savefig(dir_vel / f"vel_norm_3D_slice_{n:06d}.png")
+            plt.close(fig)
+
 
             # pressure
             fig = plt.figure()
@@ -446,171 +568,218 @@ def main():
             Xp, Yp, Zp = X[:-1, :-1, :-1] + dx / 2., Y[:-1, :-1, :-1] + dy / 2., Z[:-1, :-1, :-1] + dz / 2.
             p_bar = p - np.mean(p)
             cntr = ax.scatter(
-                Xp, Yp, Zp, 
-                c=p_bar,
-                vmin=-.1, vmax=.1, cmap="turbo", marker="."
+                Xp[:,Ny//2:,:], Yp[:,Ny//2:,:], Zp[:,Ny//2:,:],
+                c=p_bar[:,Ny//2:,:],
+                vmin=-.02, vmax=.02, cmap="turbo", marker="."
             )
-            fig.colorbar(cntr, shrink=.5, aspect=15)
+            # cntr = ax.scatter(
+            #     Xp, Yp, Zp, 
+            #     c=p_bar,
+            #     vmin=-.1, vmax=.1, cmap="turbo", marker="."
+            # )
+            # fig.colorbar(cntr, shrink=.5, aspect=15)
             ax.set(
-                xlabel=r"$x$",
-                ylabel=r"$y$",
-                zlabel=r"$z$",
-                title=rf"$t$: {t:.2f}"
+                xlim=(0., 1.),
+                ylim=(0., 1.),
+                zlim=(0., 1.),
+                # xlabel=r"$x$",
+                # ylabel=r"$y$",
+                # zlabel=r"$z$",
+                title=rf"$t = {t:.3f} \ [\text{{s}}]$",
             )
             plt.tight_layout()
-            plt.savefig(dir_res / f"prs.png", dpi=300)
-            plt.savefig(dir_prs / f"prs_{n:04d}.png", dpi=300)
+            plt.savefig(dir_res / f"prs.png")
+            plt.savefig(dir_prs / f"prs_{n:06d}.png")
             plt.close()
 
 
             # velocity at the geometric center
-            plt.figure(figsize=(13, 4))
-            plt.suptitle(rf"$t$: {t:.2f}")
+            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+
             levels = np.linspace(0., 1., 64)
             ticks = np.linspace(0., 1., 5)
-            plt.subplot(1, 3, 1)
-            plt.contourf(
+            cf = ax[0].contourf(
                 X[1:-1, 1:-1, Nz//2], Y[1:-1, 1:-1, Nz//2], vel_norm[1:-1, 1:-1, Nz//2],
                 cmap="turbo", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$x$")
-            plt.ylabel(r"$y$")
-            plt.xlim(0., Lx)
-            plt.ylim(0., Ly)
-            plt.title(rf"$xy$ plane, $z={Lz/2:.2f}$")
+            fig.colorbar(cf, ticks=ticks, ax=ax[0])
+            ax[0].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Ly, 5),
+                xlim=(0., Lx),
+                ylim=(0., Ly),
+                xlabel=r"$x$",
+                ylabel=r"$y$",
+                title=rf"$z={Lz/2:.2f}$ plane",
+                aspect="equal",
+            )
 
-            plt.subplot(1, 3, 2)
-            plt.contourf(
+            cf = ax[1].contourf(
                 X[1:-1, Ny//2, 1:-1], Z[1:-1, Ny//2, 1:-1], vel_norm[1:-1, Ny//2, 1:-1],
                 cmap="turbo", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$x$")
-            plt.ylabel(r"$z$")
-            plt.xlim(0., Lx)
-            plt.ylim(0., Lz)
-            plt.title(rf"$xz$ plane, $y={Ly/2:.2f}$")
+            fig.colorbar(cf, ticks=ticks, ax=ax[1])
+            ax[1].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlabel=r"$x$",
+                ylabel=r"$z$",
+                xlim=(0., Lx),
+                ylim=(0., Lz),
+                title=rf"$y={Ly/2:.2f}$ plane",
+                aspect="equal",
+            )
 
-            plt.subplot(1, 3, 3)
-            plt.contourf(
+            cf = ax[2].contourf(
                 Y[Nx//2, 1:-1, 1:-1], Z[Nx//2, 1:-1, 1:-1], vel_norm[Nx//2, 1:-1, 1:-1],
                 cmap="turbo", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$y$")
-            plt.ylabel(r"$z$")
-            plt.xlim(0., Ly)
-            plt.ylim(0., Lz)
-            plt.title(rf"$yz$ plane, $x={Lx/2:.2f}$")
+            fig.colorbar(cf, ticks=ticks, ax=ax[2])
+            ax[2].set(
+                xticks=np.linspace(0., Ly, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlim=(0., Ly),
+                ylim=(0., Lz),
+                xlabel=r"$y$",
+                ylabel=r"$z$",
+                title=rf"$x={Lx/2:.2f}$ plane",
+                aspect="equal",
+            )
 
-            plt.tight_layout()
-            plt.savefig(dir_res / f"vel_norm_slice.png", dpi=300)
-            plt.savefig(dir_vel_slc / f"vel_norm_slice_{n:04d}.png", dpi=300)
-            plt.close()
+            fig.suptitle(rf"$t = {t:.3f} \ [\text{{s}}]$",)
+            fig.tight_layout()
+            fig.savefig(dir_res / f"vel_norm_slice.png")
+            fig.savefig(dir_vel_slc / f"vel_norm_slice_{n:06d}.png")
+            plt.close(fig)
 
 
             # pressure at the geometric center
-            plt.figure(figsize=(13, 4))
-            plt.suptitle(rf"$t$: {t:.2f}")
+            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+
             p_lim = .02
             levels = np.linspace(-p_lim, p_lim, 64)
             ticks = np.linspace(-p_lim, p_lim, 5)
-            plt.subplot(1, 3, 1)
-            plt.contourf(
-                Xp[:, :, Nz//2], Yp[:, :, Nz//2], p[:, :, Nz//2],
+
+            cf = ax[0].contourf(
+                Xp[1:-1, 1:-1, Nz//2], Yp[1:-1, 1:-1, Nz//2], p[1:-1, 1:-1, Nz//2],
                 cmap="turbo", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$x$")
-            plt.ylabel(r"$y$")
-            plt.xlim(0., Lx)
-            plt.ylim(0., Ly)
-            plt.title(rf"$xy$ plane, $z={Lz/2:.2f}$")
-
-            plt.subplot(1, 3, 2)
-            plt.contourf(
-                Xp[:, Ny//2, :], Zp[:, Ny//2, :], p[:, Ny//2, :],
-                cmap="turbo", levels=levels, extend="both"
-            )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$x$")
-            plt.ylabel(r"$z$")
-            plt.xlim(0., Lx)
-            plt.ylim(0., Lz)
-            plt.title(rf"$xz$ plane, $y={Ly/2:.2f}$")
-
-            plt.subplot(1, 3, 3)
-            plt.contourf(
-                Yp[Nx//2, :, :], Zp[Nx//2, :, :], p[Nx//2, :, :],
-                cmap="turbo", levels=levels, extend="both"
-            )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$y$")
-            plt.ylabel(r"$z$")
-            plt.xlim(0., Ly)
-            plt.ylim(0., Lz)
-            plt.title(rf"$yz$ plane, $x={Lx/2:.2f}$")
-
-            plt.tight_layout()
-            plt.savefig(dir_res / f"prs_slice.png", dpi=300)
-            plt.savefig(dir_prs_slc / f"prs_slice_{n:04d}.png", dpi=300)
-            plt.close()
-
-
-            fig, ax = plt.subplots(1, 3, figsize=(13, 4))
-            fig.suptitle(rf"$t$: {t:.2f}")
-            ticks = np.linspace(0., 1., 5)
-            step = Nx // 20
-            Q = ax[0].quiver(
-                X[1:-1:step, 1:-1:step, Nz//2], Y[1:-1:step, 1:-1:step, Nz//2], 
-                u[1:-1:step, 1:-1:step, Nz//2], v[1:-1:step, 1:-1:step, Nz//2],
-                np.sqrt(u[1:-1:step, 1:-1:step, Nz//2]**2 + v[1:-1:step, 1:-1:step, Nz//2]**2), 
-                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
-            )
-            fig.colorbar(Q, ticks=ticks, extend="both", ax=ax[0])
+            fig.colorbar(cf, ticks=ticks, ax=ax[0])
             ax[0].set(
-                xlabel=r"$x$",
-                ylabel=r"$y$",
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Ly, 5),
                 xlim=(0., Lx),
                 ylim=(0., Ly),
-                title=r"$xy$ plane, $z=0.5$"
+                xlabel=r"$x$",
+                ylabel=r"$y$",
+                title=rf"$z={Lz/2:.2f}$ plane",
+                aspect="equal",
             )
 
-            Q = ax[1].quiver(
-                X[1:-1:step, Ny//2, 1:-1:step], Z[1:-1:step, Ny//2, 1:-1:step], 
-                u[1:-1:step, Ny//2, 1:-1:step], w[1:-1:step, Ny//2, 1:-1:step],
-                np.sqrt(u[1:-1:step, Ny//2, 1:-1:step]**2 + w[1:-1:step, Ny//2, 1:-1:step]**2),
-                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            cf = ax[1].contourf(
+                Xp[1:-1, Ny//2, 1:-1], Zp[1:-1, Ny//2, 1:-1], p[1:-1, Ny//2, 1:-1],
+                cmap="turbo", levels=levels, extend="both"
             )
-            fig.colorbar(Q, ticks=ticks, extend="both", ax=ax[1])
+            fig.colorbar(cf, ticks=ticks, ax=ax[1])
             ax[1].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Lz, 5),
                 xlabel=r"$x$",
                 ylabel=r"$z$",
                 xlim=(0., Lx),
                 ylim=(0., Lz),
-                title=r"$xz$ plane, $y=0.5$"
+                title=rf"$y={Ly/2:.2f}$ plane",
+                aspect="equal",
             )
 
-            Q = ax[2].quiver(
-                Y[Nx//2, 1:-1:step, 1:-1:step], Z[Nx//2, 1:-1:step, 1:-1:step], 
-                v[Nx//2, 1:-1:step, 1:-1:step], w[Nx//2, 1:-1:step, 1:-1:step],
-                np.sqrt(v[Nx//2, 1:-1:step, 1:-1:step]**2 + w[Nx//2, 1:-1:step, 1:-1:step]**2),
-                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            cf = ax[2].contourf(
+                Yp[Nx//2, 1:-1, 1:-1], Zp[Nx//2, 1:-1, 1:-1], p[Nx//2, 1:-1, 1:-1],
+                cmap="turbo", levels=levels, extend="both"
             )
-            fig.colorbar(Q, ticks=ticks, extend="both", ax=ax[2])
+            fig.colorbar(cf, ticks=ticks, ax=ax[2])
             ax[2].set(
-                xlabel=r"$y$",
-                ylabel=r"$z$",
+                xticks=np.linspace(0., Ly, 5),
+                yticks=np.linspace(0., Lz, 5),
                 xlim=(0., Ly),
                 ylim=(0., Lz),
-                title=r"$yz$ plane, $x=0.5$"
+                xlabel=r"$y$",
+                ylabel=r"$z$",
+                title=rf"$x={Lx/2:.2f}$ plane",
+                aspect="equal",
             )
 
-            plt.tight_layout()
-            plt.savefig(dir_res / f"vel_quiver.png", dpi=300)
-            plt.savefig(dir_vel_qvr / f"vel_quiver_{n:04d}.png", dpi=300)
-            plt.close()
+            fig.suptitle(rf"$t = {t:.3f} \ [\text{{s}}]$",)
+            fig.tight_layout()
+            fig.savefig(dir_res / f"prs_slice.png")
+            fig.savefig(dir_prs_slc / f"prs_slice_{n:06d}.png")
+            plt.close(fig)
+
+
+            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+            ticks = np.linspace(0., 1., 5)
+            step = Nx // 20
+            u_norm = u / vel_norm
+            v_norm = v / vel_norm
+            w_norm = w / vel_norm
+            qv = ax[0].quiver(
+                X[1:-1:step, 1:-1:step, Nz//2], Y[1:-1:step, 1:-1:step, Nz//2],
+                u_norm[1:-1:step, 1:-1:step, Nz//2], v_norm[1:-1:step, 1:-1:step, Nz//2],
+                vel_norm[1:-1:step, 1:-1:step, Nz//2],
+                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            )
+            fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[0])
+            ax[0].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Ly, 5),
+                xlim=(0., Lx),
+                ylim=(0., Ly),
+                xlabel=r"$x$",
+                ylabel=r"$y$",
+                title=rf"$z={Lz/2:.2f}$ plane",
+                aspect="equal",
+            )
+
+            qv = ax[1].quiver(
+                X[1:-1:step, Ny//2, 1:-1:step], Z[1:-1:step, Ny//2, 1:-1:step],
+                u_norm[1:-1:step, Ny//2, 1:-1:step], w_norm[1:-1:step, Ny//2, 1:-1:step],
+                vel_norm[1:-1:step, Ny//2, 1:-1:step],
+                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            )
+            fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[1])
+            ax[1].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlim=(0., Lx),
+                ylim=(0., Lz),
+                xlabel=r"$x$",
+                ylabel=r"$z$",
+                title=rf"$y={Ly/2:.2f}$ plane",
+                aspect="equal",
+            )
+
+            qv = ax[2].quiver(
+                Y[Nx//2, 1:-1:step, 1:-1:step], Z[Nx//2, 1:-1:step, 1:-1:step],
+                v_norm[Nx//2, 1:-1:step, 1:-1:step], w_norm[Nx//2, 1:-1:step, 1:-1:step],
+                vel_norm[Nx//2, 1:-1:step, 1:-1:step],
+                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            )
+            fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[2])
+            ax[2].set(
+                xticks=np.linspace(0., Ly, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlim=(0., Ly),
+                ylim=(0., Lz),
+                xlabel=r"$y$",
+                ylabel=r"$z$",
+                title=rf"$x={Lx/2:.2f}$ plane",
+                aspect="equal",
+            )
+
+            fig.suptitle(rf"$t = {t:.3f} \ [\text{{s}}]$",)
+            fig.tight_layout()
+            fig.savefig(dir_res / f"vel_quiver.png")
+            fig.savefig(dir_vel_qvr / f"vel_quiver_{n:06d}.png")
+            plt.close(fig)
 
 
             # vorticity at the geometric center
@@ -620,50 +789,62 @@ def main():
                     - (w[2:, 1:-1, 1:-1] - w[:-2, 1:-1, 1:-1]) / (2. * dx)
             vor_z = (v[2:, 1:-1, 1:-1] - v[:-2, 1:-1, 1:-1]) / (2. * dx) \
                     - (u[1:-1, 2:, 1:-1] - u[1:-1, :-2, 1:-1]) / (2. * dy)
-            plt.figure(figsize=(13, 4))
-            plt.suptitle(rf"$t$: {t:.2f}")
-            levels = np.linspace(-5., 5., 64)
+            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+            levels = np.linspace(-5., 5., 32)
             ticks = np.linspace(-5., 5., 5)
-            plt.subplot(1, 3, 1)
-            plt.contour(
+            cf = ax[0].contourf(
                 X[2:-2, 2:-2, Nz//2], Y[2:-2, 2:-2, Nz//2], vor_x[1:-1, 1:-1, Nz//2],
                 cmap="seismic", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$x$")
-            plt.ylabel(r"$y$")
-            plt.xlim(0., Lx)
-            plt.ylim(0., Ly)
-            plt.title(rf"$xy$ plane, $z={Lz/2:.2f}$")
+            fig.colorbar(cf, ticks=ticks, ax=ax[0])
+            ax[0].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Ly, 5),
+                xlim=(0., Lx),
+                ylim=(0., Ly),
+                xlabel=r"$x$",
+                ylabel=r"$y$",
+                title=rf"$z={Lz/2:.2f}$ plane",
+                aspect="equal",
+            )
 
-            plt.subplot(1, 3, 2)
-            plt.contour(
+            cf = ax[1].contourf(
                 X[2:-2, Ny//2, 2:-2], Z[2:-2, Ny//2, 2:-2], vor_y[1:-1, Ny//2, 1:-1],
                 cmap="seismic", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$x$")
-            plt.ylabel(r"$z$")
-            plt.xlim(0., Lx)
-            plt.ylim(0., Lz)
-            plt.title(rf"$xz$ plane, $y={Ly/2:.2f}$")
+            fig.colorbar(cf, ticks=ticks, ax=ax[1])
+            ax[1].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlim=(0., Lx),
+                ylim=(0., Lz),
+                xlabel=r"$x$",
+                ylabel=r"$z$",
+                title=rf"$y={Ly/2:.2f}$ plane",
+                aspect="equal",
+            )
 
-            plt.subplot(1, 3, 3)
-            plt.contour(
+            cf = ax[2].contourf(
                 Y[Nx//2, 2:-2, 2:-2], Z[Nx//2, 2:-2, 2:-2], vor_z[Nx//2, 1:-1, 1:-1],
                 cmap="seismic", levels=levels, extend="both"
             )
-            plt.colorbar(ticks=ticks)
-            plt.xlabel(r"$y$")
-            plt.ylabel(r"$z$")
-            plt.xlim(0., Ly)
-            plt.ylim(0., Lz)
-            plt.title(rf"$yz$ plane, $x={Lx/2:.2f}$")
+            fig.colorbar(cf, ticks=ticks, ax=ax[2])
+            ax[2].set(
+                xticks=np.linspace(0., Ly, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlim=(0., Ly),
+                ylim=(0., Lz),
+                xlabel=r"$y$",
+                ylabel=r"$z$",
+                title=rf"$x={Lx/2:.2f}$ plane",
+                aspect="equal",
+            )
 
-            plt.tight_layout()
-            plt.savefig(dir_res / f"vor_slice.png", dpi=300)
-            plt.savefig(dir_vor_slc / f"vor_slice_{n:04d}.png", dpi=300)
-            plt.close()
+            fig.suptitle(rf"$t = {t:.3f} \ [\text{{s}}]$",)
+            fig.tight_layout()
+            fig.savefig(dir_res / f"vor_slice.png")
+            fig.savefig(dir_vor_slc / f"vor_slice_{n:06d}.png")
+            plt.close(fig)
 
 
             fig = plt.figure()
@@ -699,35 +880,57 @@ def main():
                 zlabel=r"$z$",
             )
             plt.tight_layout()
-            plt.savefig(dir_res / f"slice.png", dpi=300)
+            plt.savefig(dir_res / f"slice.png")
             plt.close()
 
 
             # velocity at the geometric center
             if Re in [100., 400., 1000.]:
-                plt.figure(figsize=(5, 5))
-                plt.scatter(df_Jiang["u"], df_Jiang["z"], marker="1", label="Jiang et al., 1994")
-                plt.scatter(df_Wong["u"],  df_Wong["z"],  marker="2", label="Wong & Baker, 2002")
-                plt.plot(u[Nx//2, Ny//2, 1:-1], z[1:-1], c="k", ls="--", label="Present")
-                plt.legend()
-                plt.xlabel(r"$u$")
-                plt.ylabel(r"$z$")
-                plt.grid(alpha=.3)
-                plt.tight_layout()
-                plt.savefig(dir_res / f"vel_comparison.png", dpi=300)
-                plt.close()
+                fig, ax = plt.subplots(figsize=(5, 5))
+                ax.scatter(df_Jiang["u"], df_Jiang["z"], marker="1", label="Jiang et al., 1994")
+                ax.scatter(df_Wong["u"],  df_Wong["z"],  marker="2", label="Wong & Baker, 2002")
+                ax.plot(u[Nx//2, Ny//2, 1:-1], z[1:-1], c="k", ls="--", label="Present")
+                ax.legend()
+                ax.set(
+                    xticks=([-.2, 0., .2, .4, .6, .8, 1.]),
+                    yticks=([     0., .2, .4, .6, .8, 1.]),
+                    xlim=(-.35, 1.15),
+                    ylim=(-.15, 1.15),
+                    xlabel=r"$u$",
+                    ylabel=r"$z$",
+                    title=rf"$t = {t:.3f} \ [\text{{s}}]$",
+                    aspect="equal",
+                )
+                fig.tight_layout()
+                fig.savefig(dir_res / f"vel_comparison.png")
+                plt.close(fig)
 
-    # save data
-    # dir_npz = os.path.join(dir_res, "npz")
-    # os.makedirs(dir_npz, exist_ok=True)
-    # np.savez(
-    #     os.path.join(dir_npz, "results.npz"),
-    #     x=x, y=y, X=X, Y=Y, u=u, v=v, p=p, p_bar=p_bar, div_u=div_u, vor_u=vor_u,
-    # )
+            # save
+            np.savez(
+                dir_npz / f"data_it{n:06d}.npz",
+                x=x, y=y, z=z,
+                X=X, Y=Y, Z=Z,
+                u=u, v=v, w=w,
+                p=p, p_bar=p_bar,
+                dt=dt, t=t
+            )
+            # # save as vtk
+            # pyevtk.hl.gridToVTK(
+            #     dir_vtk / f"data_it{n:06d}.vtk",
+            #     X[1:-1, 1:-1, 1:-1],
+            #     Y[1:-1, 1:-1, 1:-1],
+            #     Z[1:-1, 1:-1, 1:-1],
+            #     pointData={
+            #         "u": u[1:-1, 1:-1, 1:-1],
+            #         "v": v[1:-1, 1:-1, 1:-1],
+            #         "w": w[1:-1, 1:-1, 1:-1],
+            #         "p": p,
+            #         "p_bar": p_bar,
+            #     }
+            # )
+
 
 ################################################################################
 
 if __name__ == "__main__":
     main()
-
-
