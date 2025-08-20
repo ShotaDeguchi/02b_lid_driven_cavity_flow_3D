@@ -8,8 +8,7 @@ space:
     pressure gradient: 2nd order central
 
 time:
-    projection method (Chorin 1968)
-
+    SMAC method (Amsden&Harlow 1970)
 grid:
     staggered grid (Arakawa B-type grid, Arakawa&Lamb 1977)
 ********************************************************************************
@@ -38,7 +37,7 @@ parser.add_argument("-t", "--time", type=float, default=200., help="maximum simu
 parser.add_argument("-u", "--u_tol", type=float, default=1e-6, help="convergence tolerance for velocity")
 parser.add_argument("-p", "--p_tol", type=float, default=1e-6, help="convergence tolerance for pressure")
 parser.add_argument("-i", "--it_max", type=int, default=int(5e3), help="maximum iteration for PPE")
-parser.add_argument("-s", "--Cs", type=float, default=.1, help="Smagorinsky constant")
+parser.add_argument("-s", "--Smagorinsky", action="store_true", help="use Smagorinsky model")
 args = parser.parse_args()
 
 
@@ -82,34 +81,34 @@ def get_advection(u, v, w, dx, dy, dz, beta=1./4.):
     return advc_x, advc_y, advc_z
 
 
-def get_diffusion(u, v, w, dx, dy, dz, k, Cs=.1):
-    # Smagorinsky model
-    # strain rate tensor
-    u_x = (u[2:-2, 2:-2, 2:-2] - u[1:-3, 2:-2, 2:-2]) / dx
-    u_y = (u[2:-2, 2:-2, 2:-2] - u[2:-2, 1:-3, 2:-2]) / dy
-    u_z = (u[2:-2, 2:-2, 2:-2] - u[2:-2, 2:-2, 1:-3]) / dz
-    v_x = (v[2:-2, 2:-2, 2:-2] - v[1:-3, 2:-2, 2:-2]) / dx
-    v_y = (v[2:-2, 2:-2, 2:-2] - v[2:-2, 1:-3, 2:-2]) / dy
-    v_z = (v[2:-2, 2:-2, 2:-2] - v[2:-2, 2:-2, 1:-3]) / dz
-    w_x = (w[2:-2, 2:-2, 2:-2] - w[1:-3, 2:-2, 2:-2]) / dx
-    w_y = (w[2:-2, 2:-2, 2:-2] - w[2:-2, 1:-3, 2:-2]) / dy
-    w_z = (w[2:-2, 2:-2, 2:-2] - w[2:-2, 2:-2, 1:-3]) / dz
-    S11, S12, S13 = u_x, .5 * (u_y + v_x), .5 * (u_z + w_x)
-    S21, S22, S23 = S12, v_y, .5 * (v_z + w_y)
-    S31, S32, S33 = S13, S23, w_z
-    S = np.sqrt(2. * (S11**2 + S22**2 + S33**2 + 2. * (S12**2 + S13**2 + S23**2)))
+def get_diffusion(u, v, w, dx, dy, dz, k, Smagorinsky=False, Cs=.1):
+    if Smagorinsky:
+        # strain rate tensor
+        u_x = (u[2:-2, 2:-2, 2:-2] - u[1:-3, 2:-2, 2:-2]) / dx
+        u_y = (u[2:-2, 2:-2, 2:-2] - u[2:-2, 1:-3, 2:-2]) / dy
+        u_z = (u[2:-2, 2:-2, 2:-2] - u[2:-2, 2:-2, 1:-3]) / dz
+        v_x = (v[2:-2, 2:-2, 2:-2] - v[1:-3, 2:-2, 2:-2]) / dx
+        v_y = (v[2:-2, 2:-2, 2:-2] - v[2:-2, 1:-3, 2:-2]) / dy
+        v_z = (v[2:-2, 2:-2, 2:-2] - v[2:-2, 2:-2, 1:-3]) / dz
+        w_x = (w[2:-2, 2:-2, 2:-2] - w[1:-3, 2:-2, 2:-2]) / dx
+        w_y = (w[2:-2, 2:-2, 2:-2] - w[2:-2, 1:-3, 2:-2]) / dy
+        w_z = (w[2:-2, 2:-2, 2:-2] - w[2:-2, 2:-2, 1:-3]) / dz
+        S11, S12, S13 = u_x, .5 * (u_y + v_x), .5 * (u_z + w_x)
+        S21, S22, S23 = S12, v_y, .5 * (v_z + w_y)
+        S31, S32, S33 = S13, S23, w_z
+        S = np.sqrt(2. * (S11**2 + S22**2 + S33**2 + 2. * (S12**2 + S13**2 + S23**2)))
 
-    # # van Driest damping function
-    # kappa = .41
-    # A = 26.
-    # B = 5.3
-    # lm = kappa * 
+        # # van Driest damping function
+        # kappa = .41
+        # A = 26.
+        # B = 5.3
+        # lm = kappa * 
 
-    # Smagorinsky model
-    ls = Cs * dx
-    l0 = ls   # min(lm, ls)
-    kt = l0**2 * S
-    k += kt
+        # Smagorinsky model
+        ls = Cs * dx
+        l0 = ls   # min(lm, ls)
+        kt = l0**2 * S
+        k += kt
 
     # diffusion of u
     u_xx = (u[3:-1, 2:-2, 2:-2] - 2. * u[2:-2, 2:-2, 2:-2] + u[1:-3, 2:-2, 2:-2]) / dx**2
@@ -310,6 +309,7 @@ def main():
     v = np.zeros(shape=(Nz, Ny, Nx)) + 1e-9
     w = np.zeros(shape=(Nz, Ny, Nx)) + 1e-9
     p = np.zeros(shape=(Nz-1, Ny-1, Nx-1)) + 1e-9
+    q = np.zeros(shape=(Nz-1, Ny-1, Nx-1)) + 1e-9
     b = np.zeros(shape=(Nz-1, Ny-1, Nx-1)) + 1e-9
 
     u_tol = args.u_tol    # convergence tolerance for velocity
@@ -331,6 +331,7 @@ def main():
     dir_prs_slc = dir_res / "pressure_slice"
     dir_vel_qvr = dir_res / "velocity_quiver"
     dir_vor_slc = dir_res / "vorticity_slice"
+    dir_q_slc = dir_res / "q_slice"
 
     dir_res.mkdir(exist_ok=True)
     dir_vel.mkdir(exist_ok=True)
@@ -339,6 +340,7 @@ def main():
     dir_prs_slc.mkdir(exist_ok=True)
     dir_vel_qvr.mkdir(exist_ok=True)
     dir_vor_slc.mkdir(exist_ok=True)
+    dir_q_slc.mkdir(exist_ok=True)
 
     # main loop
     n = 0
@@ -362,31 +364,33 @@ def main():
 
         # diffusion
         diff_x, diff_y, diff_z \
-            = get_diffusion(u_old, v_old, w_old, dx, dy, dz, k, Cs=args.Cs)
+            = get_diffusion(u_old, v_old, w_old, dx, dy, dz, k, Smagorinsky=args.Smagorinsky)
         # print(diff_x, diff_y, diff_z)
 
-        # intermediate velocity
-        u_hat[2:-2, 2:-2, 2:-2] = u_old[2:-2, 2:-2, 2:-2] + dt * (- advc_x + diff_x)
-        v_hat[2:-2, 2:-2, 2:-2] = v_old[2:-2, 2:-2, 2:-2] + dt * (- advc_y + diff_y)
-        w_hat[2:-2, 2:-2, 2:-2] = w_old[2:-2, 2:-2, 2:-2] + dt * (- advc_z + diff_z)
+        # pressure gradient
+        p_x, p_y, p_z = get_pressure_gradient(p, dx, dy, dz)
 
-        # source term for PPE (for Arakawa B-type grid)
+        # intermediate velocity
+        u_hat[2:-2, 2:-2, 2:-2] = u_old[2:-2, 2:-2, 2:-2] + dt * (- advc_x + diff_x - p_x)
+        v_hat[2:-2, 2:-2, 2:-2] = v_old[2:-2, 2:-2, 2:-2] + dt * (- advc_y + diff_y - p_y)
+        w_hat[2:-2, 2:-2, 2:-2] = w_old[2:-2, 2:-2, 2:-2] + dt * (- advc_z + diff_z - p_z)
+
+        # source term for Poisson eq
         b, div_u_hat = get_source(u_hat, v_hat, w_hat, dx, dy, dz, dt, b)
 
-        # solve PPE
-        p = Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, p_tol)
+        # solve Poisson eq for a scalar potential q
+        q = Jacobi(q, b, dx, dy, dz, Nx, Ny, Nz, it_max, p_tol)
 
-        # pressure gradient (for Arakawa B-type grid)
-        p_x, p_y, p_z = get_pressure_gradient(p, dx, dy, dz)
-        # if n == 10:
-        #     print(p)
-        #     print(p_x, p_y, p_z)
-        #     exit()
+        # correct pressure
+        p = p + q
+
+        # gradient of q
+        q_x, q_y, q_z = get_pressure_gradient(q, dx, dy, dz)
 
         # velocity correction
-        u[2:-2, 2:-2, 2:-2] = u_hat[2:-2, 2:-2, 2:-2] + dt * (- p_x)
-        v[2:-2, 2:-2, 2:-2] = v_hat[2:-2, 2:-2, 2:-2] + dt * (- p_y)
-        w[2:-2, 2:-2, 2:-2] = w_hat[2:-2, 2:-2, 2:-2] + dt * (- p_z)
+        u[2:-2, 2:-2, 2:-2] = u_hat[2:-2, 2:-2, 2:-2] + dt * (- q_x)
+        v[2:-2, 2:-2, 2:-2] = v_hat[2:-2, 2:-2, 2:-2] + dt * (- q_y)
+        w[2:-2, 2:-2, 2:-2] = w_hat[2:-2, 2:-2, 2:-2] + dt * (- q_z)
 
         # boundary condition
         u[-2:, :, :], v[-2:, :, :], w[-2:, :, :] = 0., 0., 0.   # x = xmax plane
@@ -555,6 +559,53 @@ def main():
             plt.tight_layout()
             plt.savefig(dir_res / f"prs_slice.png", dpi=300)
             plt.savefig(dir_prs_slc / f"prs_slice_{n:04d}.png", dpi=300)
+            plt.close()
+
+            # scalar potential q
+            plt.figure(figsize=(13, 4))
+            plt.suptitle(rf"$t$: {t:.2f}")
+            q_lim = .02
+            levels = np.linspace(-q_lim, q_lim, 64)
+            ticks = np.linspace(-q_lim, q_lim, 5)
+            plt.subplot(1, 3, 1)
+            plt.contourf(
+                Xp[:, :, Nz//2], Yp[:, :, Nz//2], q[:, :, Nz//2],
+                cmap="turbo", levels=levels, extend="both"
+            )
+            plt.colorbar(ticks=ticks)
+            plt.xlabel(r"$x$")
+            plt.ylabel(r"$y$")
+            plt.xlim(0., Lx)
+            plt.ylim(0., Ly)
+            plt.title(rf"$xy$ plane, $z={Lz/2:.2f}$")
+
+            plt.subplot(1, 3, 2)
+            plt.contourf(
+                Xp[:, Ny//2, :], Zp[:, Ny//2, :], q[:, Ny//2, :],
+                cmap="turbo", levels=levels, extend="both"
+            )
+            plt.colorbar(ticks=ticks)
+            plt.xlabel(r"$x$")
+            plt.ylabel(r"$z$")
+            plt.xlim(0., Lx)
+            plt.ylim(0., Lz)
+            plt.title(rf"$xz$ plane, $y={Ly/2:.2f}$")
+
+            plt.subplot(1, 3, 3)
+            plt.contourf(
+                Yp[Nx//2, :, :], Zp[Nx//2, :, :], q[Nx//2, :, :],
+                cmap="turbo", levels=levels, extend="both"
+            )
+            plt.colorbar(ticks=ticks)
+            plt.xlabel(r"$y$")
+            plt.ylabel(r"$z$")
+            plt.xlim(0., Ly)
+            plt.ylim(0., Lz)
+            plt.title(rf"$yz$ plane, $x={Lx/2:.2f}$")
+
+            plt.tight_layout()
+            plt.savefig(dir_res / f"q_slice.png", dpi=300)
+            plt.savefig(dir_q_slc / f"q_slice_{n:04d}.png", dpi=300)
             plt.close()
 
 
