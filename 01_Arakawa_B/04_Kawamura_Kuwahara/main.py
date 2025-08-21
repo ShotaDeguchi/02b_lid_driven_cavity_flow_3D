@@ -190,23 +190,23 @@ def Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, tol):
                             + (p_old[1:-1, 1:-1, 2:] + p_old[1:-1, 1:-1, :-2]) * dx**2 * dy**2
                         )
 
-        # boundary condition (for Arakawa B-type grid)
-        p[0,  :, :] = p[1,  :, :]   # x = xmin plane
-        p[-1, :, :] = p[-2, :, :]   # x = xmax plane
-        p[:,  0, :] = p[:,  1, :]   # y = ymin plane
-        p[:, -1, :] = p[:, -2, :]   # y = ymax plane
-        p[:, :,  0] = p[:, :,  1]   # z = zmin plane
-        p[:, :, -1] = p[:, :, -2]   # z = zmax plane
-        p[1, Ny//2, 1] = 0.
-        # p[1, 1, 1] = 0.   # (x, y, z) = (xmin, ymin, zmin) corner
+        # # boundary condition (for Arakawa B-type grid)
+        # p[0,  :, :] = p[1,  :, :]   # x = xmin plane
+        # p[-1, :, :] = p[-2, :, :]   # x = xmax plane
+        # p[:,  0, :] = p[:,  1, :]   # y = ymin plane
+        # p[:, -1, :] = p[:, -2, :]   # y = ymax plane
+        # p[:, :,  0] = p[:, :,  1]   # z = zmin plane
+        # p[:, :, -1] = p[:, :, -2]   # z = zmax plane
+        # p[1, Ny//2, 1] = 0.
+        # # p[1, 1, 1] = 0.   # (x, y, z) = (xmin, ymin, zmin) corner
 
-        # # periodic boundary conditions
-        # p[0,  :, :] = p[-2, :, :]   # xmin = xmax
-        # p[-1, :, :] = p[1,  :, :]   # xmax = xmin
-        # p[:,  0, :] = p[:,  1, :]   # y = ymin plane (Neumann)
-        # p[:, -1, :] = p[:, -2, :]   # y = ymax plane (Neumann)
-        # p[:, :,  0] = p[:, :,  1]   # z = zmin plane (Neumann)
-        # p[:, :, -1] = p[:, :, -2]   # z = zmax plane (Neumann)
+        # periodic boundary conditions
+        p[0,  :, :] = p[-2, :, :]   # xmin = xmax
+        p[-1, :, :] = p[1,  :, :]   # xmax = xmin
+        p[:,  0, :] = p[:,  1, :]   # y = ymin plane (Neumann)
+        p[:, -1, :] = p[:, -2, :]   # y = ymax plane (Neumann)
+        p[:, :,  0] = p[:, :,  1]   # z = zmin plane (Neumann)
+        p[:, :, -1] = p[:, :, -2]   # z = zmax plane (Neumann)
 
         # converged?
         p_res = np.sqrt(np.sum((p - p_old)**2)) / np.sqrt(np.sum(p_old**2))
@@ -416,23 +416,23 @@ def main():
         v[2:-2, 2:-2, 2:-2] = v_hat[2:-2, 2:-2, 2:-2] + dt * (- p_y)
         w[2:-2, 2:-2, 2:-2] = w_hat[2:-2, 2:-2, 2:-2] + dt * (- p_z)
 
-        # boundary condition
-        u[-2:, :, :], v[-2:, :, :], w[-2:, :, :] = 0., 0., 0.   # x = xmax plane
-        u[:2,  :, :], v[:2,  :, :], w[:2,  :, :] = 0., 0., 0.   # x = xmin plane
-        u[:, -2:, :], v[:, -2:, :], w[:, -2:, :] = 0., 0., 0.   # y = ymax plane
-        u[:,  :2, :], v[:,  :2, :], w[:,  :2, :] = 0., 0., 0.   # y = ymin plane
-        u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
-        u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
-
-        # # periodic boundary conditions
-        # u[ 0,  :, :], v[ 0,  :, :], w[ 0,  :, :] = u[-4,  :, :], v[-4,  :, :], w[-4,  :, :]   # x = xmin plane
-        # u[ 1,  :, :], v[ 1,  :, :], w[ 1,  :, :] = u[-3,  :, :], v[-3,  :, :], w[-3,  :, :]   # x = xmin plane
-        # u[-1,  :, :], v[-1,  :, :], w[-1,  :, :] = u[ 3,  :, :], v[ 3,  :, :], w[ 3,  :, :]   # x = xmax plane
-        # u[-2,  :, :], v[-2,  :, :], w[-2,  :, :] = u[ 2,  :, :], v[ 2,  :, :], w[ 2,  :, :]   # x = xmax plane
+        # # boundary condition
+        # u[-2:, :, :], v[-2:, :, :], w[-2:, :, :] = 0., 0., 0.   # x = xmax plane
+        # u[:2,  :, :], v[:2,  :, :], w[:2,  :, :] = 0., 0., 0.   # x = xmin plane
         # u[:, -2:, :], v[:, -2:, :], w[:, -2:, :] = 0., 0., 0.   # y = ymax plane
         # u[:,  :2, :], v[:,  :2, :], w[:,  :2, :] = 0., 0., 0.   # y = ymin plane
         # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
         # u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
+
+        # periodic boundary conditions
+        u[ 0,  :, :], v[ 0,  :, :], w[ 0,  :, :] = u[-4,  :, :], v[-4,  :, :], w[-4,  :, :]   # x = xmin plane
+        u[ 1,  :, :], v[ 1,  :, :], w[ 1,  :, :] = u[-3,  :, :], v[-3,  :, :], w[-3,  :, :]   # x = xmin plane
+        u[-1,  :, :], v[-1,  :, :], w[-1,  :, :] = u[ 3,  :, :], v[ 3,  :, :], w[ 3,  :, :]   # x = xmax plane
+        u[-2,  :, :], v[-2,  :, :], w[-2,  :, :] = u[ 2,  :, :], v[ 2,  :, :], w[ 2,  :, :]   # x = xmax plane
+        u[:, -2:, :], v[:, -2:, :], w[:, -2:, :] = 0., 0., 0.   # y = ymax plane
+        u[:,  :2, :], v[:,  :2, :], w[:,  :2, :] = 0., 0., 0.   # y = ymin plane
+        u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
+        u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
 
         # # parabola
         # U = (X - 0.) * (1. - X) * (Y - 0.) * (1. - Y)
