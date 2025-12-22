@@ -34,7 +34,7 @@ from reference import *
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-d", "--dx", type=float, default=1e-2, help="grid spacing")
+parser.add_argument("-d", "--dx", type=float, default=2e-2, help="grid spacing")
 parser.add_argument("-r", "--Re", type=float, default=1e3, help="Reynolds number")
 parser.add_argument("-t", "--time", type=float, default=120., help="maximum simulation time")
 parser.add_argument("-u", "--u_tol", type=float, default=1e-6, help="convergence tolerance for velocity")
@@ -190,30 +190,21 @@ def Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, tol):
                             + (p_old[1:-1, 1:-1, 2:] + p_old[1:-1, 1:-1, :-2]) * dx**2 * dy**2
                         )
 
-        # # boundary condition (for Arakawa B-type grid)
-        # p[0,  :, :] = p[1,  :, :]   # x = xmin plane
-        # p[-1, :, :] = p[-2, :, :]   # x = xmax plane
-        # p[:,  0, :] = p[:,  1, :]   # y = ymin plane
-        # p[:, -1, :] = p[:, -2, :]   # y = ymax plane
-        # p[:, :,  0] = p[:, :,  1]   # z = zmin plane
-        # p[:, :, -1] = p[:, :, -2]   # z = zmax plane
-        # p[1, Ny//2, 1] = 0.
-        # # p[1, 1, 1] = 0.   # (x, y, z) = (xmin, ymin, zmin) corner
-
-        # periodic boundary conditions
-        p[0,  :, :] = p[-2, :, :]   # xmin = xmax
-        p[-1, :, :] = p[1,  :, :]   # xmax = xmin
-        p[:,  0, :] = p[:,  1, :]   # y = ymin plane (Neumann)
-        p[:, -1, :] = p[:, -2, :]   # y = ymax plane (Neumann)
-        p[:, :,  0] = p[:, :,  1]   # z = zmin plane (Neumann)
-        p[:, :, -1] = p[:, :, -2]   # z = zmax plane (Neumann)
+        # boundary condition (for Arakawa B-type grid)
+        p[0,  :, :] = p[1,  :, :]   # x = xmin plane
+        p[-1, :, :] = p[-2, :, :]   # x = xmax plane
+        p[:,  0, :] = p[:,  1, :]   # y = ymin plane
+        p[:, -1, :] = p[:, -2, :]   # y = ymax plane
+        p[:, :,  0] = p[:, :,  1]   # z = zmin plane
+        p[:, :, -1] = p[:, :, -2]   # z = zmax plane
+        p[1, Ny//2, 1] = 0.
+        # p[1, 1, 1] = 0.   # (x, y, z) = (xmin, ymin, zmin) corner
 
         # converged?
         p_res = np.sqrt(np.sum((p - p_old)**2)) / np.sqrt(np.sum(p_old**2))
         if it % 1000 == 0:
             print(f"   >>> PPE -> it: {it}, p_res: {p_res:.6e}")
         if p_res < tol:
-            print(f"   >>> PPE -> it: {it}, p_res: {p_res:.6e}")
             print(f"   >>> PPE converged")
             break
     return p
@@ -252,7 +243,6 @@ def main():
     Re = args.Re
 
     dir_res = f"Re{Re:.0f}"
-    # dir_res = f"Re{Re:.0f}_periodic"
     os.makedirs(dir_res, exist_ok=True)
 
     # domain
@@ -342,6 +332,7 @@ def main():
     # reference solutions
     ref_Jiang = Jiang(Re)
     ref_Wong = Wong(Re)
+
     df_Jiang = pd.DataFrame(ref_Jiang)
     df_Wong = pd.DataFrame(ref_Wong)
 
@@ -416,28 +407,18 @@ def main():
         v[2:-2, 2:-2, 2:-2] = v_hat[2:-2, 2:-2, 2:-2] + dt * (- p_y)
         w[2:-2, 2:-2, 2:-2] = w_hat[2:-2, 2:-2, 2:-2] + dt * (- p_z)
 
-        # # boundary condition
-        # u[-2:, :, :], v[-2:, :, :], w[-2:, :, :] = 0., 0., 0.   # x = xmax plane
-        # u[:2,  :, :], v[:2,  :, :], w[:2,  :, :] = 0., 0., 0.   # x = xmin plane
-        # u[:, -2:, :], v[:, -2:, :], w[:, -2:, :] = 0., 0., 0.   # y = ymax plane
-        # u[:,  :2, :], v[:,  :2, :], w[:,  :2, :] = 0., 0., 0.   # y = ymin plane
-        # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
-        # u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
-
-        # periodic boundary conditions
-        u[ 0,  :, :], v[ 0,  :, :], w[ 0,  :, :] = u[-4,  :, :], v[-4,  :, :], w[-4,  :, :]   # x = xmin plane
-        u[ 1,  :, :], v[ 1,  :, :], w[ 1,  :, :] = u[-3,  :, :], v[-3,  :, :], w[-3,  :, :]   # x = xmin plane
-        u[-1,  :, :], v[-1,  :, :], w[-1,  :, :] = u[ 3,  :, :], v[ 3,  :, :], w[ 3,  :, :]   # x = xmax plane
-        u[-2,  :, :], v[-2,  :, :], w[-2,  :, :] = u[ 2,  :, :], v[ 2,  :, :], w[ 2,  :, :]   # x = xmax plane
+        # boundary condition
+        u[-2:, :, :], v[-2:, :, :], w[-2:, :, :] = 0., 0., 0.   # x = xmax plane
+        u[:2,  :, :], v[:2,  :, :], w[:2,  :, :] = 0., 0., 0.   # x = xmin plane
         u[:, -2:, :], v[:, -2:, :], w[:, -2:, :] = 0., 0., 0.   # y = ymax plane
         u[:,  :2, :], v[:,  :2, :], w[:,  :2, :] = 0., 0., 0.   # y = ymin plane
         u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
         u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
 
-        # # parabola
-        # U = (X - 0.) * (1. - X) * (Y - 0.) * (1. - Y)
-        # U /= U.max()
-        # # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = U[:, :, -2:], 0., 0.   # z = zmax plane
+        # parabola
+        U = (X - 0.) * (1. - X) * (Y - 0.) * (1. - Y)
+        U /= U.max()
+        # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = U[:, :, -2:], 0., 0.   # z = zmax plane
 
         # converged?
         n += 1
