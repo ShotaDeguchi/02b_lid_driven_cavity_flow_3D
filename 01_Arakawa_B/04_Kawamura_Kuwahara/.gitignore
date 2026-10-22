@@ -1,5 +1,4 @@
 # ignored files / directories
 
-/*/*/
-/*/*/
-/*/*/
+# ignore all directories in the repository root
+/*/

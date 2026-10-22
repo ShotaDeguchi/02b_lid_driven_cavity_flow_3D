@@ -22,8 +22,11 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import scipy as sp
 import pandas as pd
 import matplotlib.pyplot as plt
+
+import numba
 
 import pyevtk
 
@@ -37,7 +40,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--dx", type=float, default=2e-2, help="grid spacing")
 parser.add_argument("-r", "--Re", type=float, default=1e3, help="Reynolds number")
 parser.add_argument("-t", "--time", type=float, default=120., help="maximum simulation time")
-parser.add_argument("-u", "--u_tol", type=float, default=1e-6, help="convergence tolerance for velocity")
+parser.add_argument("-u", "--u_tol", type=float, default=1e-8, help="convergence tolerance for velocity")
 parser.add_argument("-p", "--p_tol", type=float, default=1e-6, help="convergence tolerance for pressure")
 parser.add_argument("-i", "--it_max", type=int, default=int(5e3), help="maximum iteration for PPE")
 parser.add_argument("-s", "--Cs", type=float, default=.1, help="Smagorinsky constant")
@@ -47,7 +50,7 @@ args = parser.parse_args()
 def plot_setting():
     plt.style.use("default")
     # plt.style.use("seaborn-v0_8-deep")
-    plt.style.use("seaborn-v0_8-poster")   # paper / notebook / talk / poster
+    plt.style.use("seaborn-v0_8-talk")   # paper / notebook / talk / poster
     plt.rcParams["font.family"] = "Times New Roman"
     plt.rcParams["mathtext.fontset"] = "cm"
     plt.rcParams["figure.figsize"] = (7, 5)
@@ -59,6 +62,7 @@ def plot_setting():
     plt.rcParams["savefig.dpi"] = 300
 
 
+# @numba.jit(nopython=True)   # didnt work well...
 def get_advection(u, v, w, dx, dy, dz, beta=1./4.):
     # advection in x axis
     u_u_x = u[2:-2, 2:-2, 2:-2] * (- u[4:, 2:-2, 2:-2] + 8. * u[3:-1, 2:-2, 2:-2] - 8. * u[1:-3, 2:-2, 2:-2] + u[:-4, 2:-2, 2:-2]) / (12. * dx) \
@@ -90,6 +94,7 @@ def get_advection(u, v, w, dx, dy, dz, beta=1./4.):
     return advc_x, advc_y, advc_z
 
 
+# @numba.jit(nopython=True)
 def get_diffusion(u, v, w, dx, dy, dz, nu, Cs=.1):
     # Smagorinsky model
     # strain rate tensor
@@ -123,7 +128,7 @@ def get_diffusion(u, v, w, dx, dy, dz, nu, Cs=.1):
     l0 = ls   # min(lm, ls)
     nu_t = l0**2 * S
     nu_eff = nu + nu_t
-    print(f"   >>> nu_eff -> min: {nu_eff.min():.6e}, max: {nu_eff.max():.6e}, mean: {nu_eff.mean():.6e}")
+    # print(f"   >>> nu_eff -> min: {nu_eff.min():.6e}, max: {nu_eff.max():.6e}, mean: {nu_eff.mean():.6e}")
 
     # diffusion of u
     u_xx = (u[3:-1, 2:-2, 2:-2] - 2. * u[2:-2, 2:-2, 2:-2] + u[1:-3, 2:-2, 2:-2]) / dx**2
@@ -149,6 +154,7 @@ def get_diffusion(u, v, w, dx, dy, dz, nu, Cs=.1):
     return diff_x, diff_y, diff_z
 
 
+# @numba.jit(nopython=True)
 def get_source(u, v, w, dx, dy, dz, dt, b):
     # source term for PPE (for Arakawa B-type grid)
     # interpolate u_hat, v_hat, w_hat to cell center
@@ -175,6 +181,7 @@ def get_source(u, v, w, dx, dy, dz, dt, b):
     return b, div_u
 
 
+# @numba.jit(nopython=True)
 def Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, tol):
     # point Jacobi method
     for it in range(0, it_max+1):
@@ -197,19 +204,81 @@ def Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, tol):
         p[:, -1, :] = p[:, -2, :]   # y = ymax plane
         p[:, :,  0] = p[:, :,  1]   # z = zmin plane
         p[:, :, -1] = p[:, :, -2]   # z = zmax plane
-        p[1, Ny//2, 1] = 0.
+        # p[1, Ny//2, 1] = 0.
         # p[1, 1, 1] = 0.   # (x, y, z) = (xmin, ymin, zmin) corner
 
         # converged?
         p_res = np.sqrt(np.sum((p - p_old)**2)) / np.sqrt(np.sum(p_old**2))
         if it % 1000 == 0:
-            print(f"   >>> PPE -> it: {it}, p_res: {p_res:.6e}")
+            # print(f"   >>> PPE -> it: {it}, p_res: {p_res:.6e}")
+            print("   >>> PPE -> it, p_rses: ", it, p_res)
         if p_res < tol:
-            print(f"   >>> PPE converged")
+            # print(f"   >>> PPE converged at it: {it}, p_res: {p_res:.6e}")
+            print("   >>> PPE converged at it, p_res: ", it, p_res)
             break
     return p
 
 
+def build_coef_mat(Nx, Ny, Nz, dx, dy, dz):
+    # build coefficient matrix for PPE (for Arakawa B-type grid)
+    N = (Nx - 2) * (Ny - 2) * (Nz - 2)   # number of unknowns
+    A = np.zeros((N, N))
+    for k in range(1, Nz-1):
+        for j in range(1, Ny-1):
+            for i in range(1, Nx-1):
+                row = (k-1) * (Ny-2) * (Nx-2) + (j-1) * (Nx-2) + (i-1)
+                A[row, row] = -2. * (dy**2 * dz**2 + dz**2 * dx**2 + dx**2 * dy**2)
+                # x-direction
+                if i > 1:
+                    col = row - 1
+                    A[row, col] = dy**2 * dz**2
+                if i < Nx - 2:
+                    col = row + 1
+                    A[row, col] = dy**2 * dz**2
+                # y-direction
+                if j > 1:
+                    col = row - (Nx - 2)
+                    A[row, col] = dz**2 * dx**2
+                if j < Ny - 2:
+                    col = row + (Nx - 2)
+                    A[row, col] = dz**2 * dx**2
+                # z-direction
+                if k > 1:
+                    col = row - (Ny - 2) * (Nx - 2)
+                    A[row, col] = dx**2 * dy**2
+                if k < Nz - 2:
+                    col = row + (Ny - 2) * (Nx - 2)
+                    A[row, col] = dx**2 * dy**2
+    return A
+
+
+def build_src_vec(b, Nx, Ny, Nz):
+    """
+    build source vector for PPE (for Arakawa B-type grid)
+    """
+    N = (Nx - 2) * (Ny - 2) * (Nz - 2)   # number of unknowns
+    B = np.zeros(N)
+    for k in range(1, Nz-1):
+        for j in range(1, Ny-1):
+            for i in range(1, Nx-1):
+                row = (k-1) * (Ny-2) * (Nx-2) + (j-1) * (Nx-2) + (i-1)
+                B[row] = - b[k, j, i]
+    return B
+
+
+def solve_ppe(A, B, tol=1e-6, maxiter=1000):
+    """
+    solve pressure Poisson equation Ax = B with conjugate gradient method
+    """
+    x, info = sp.sparse.linalg.cg(A, B, tol=tol, maxiter=maxiter)
+    if info == 0:
+        print("   >>> PPE converged with CG method")
+    else:
+        print("   >>> PPE did not converge with CG method")
+    return x
+
+
+# @numba.jit(nopython=True)
 def get_pressure_gradient(p, dx, dy, dz):
     # interpolate p to cell edge,
     # then apply average pressure gradient to correct velocity
@@ -235,6 +304,9 @@ def get_pressure_gradient(p, dx, dy, dz):
 
 
 def main():
+    # timer
+    start_time = time.perf_counter()
+
     # plot setting
     plot_setting()
 
@@ -242,8 +314,9 @@ def main():
     dx = args.dx
     Re = args.Re
 
-    dir_res = f"Re{Re:.0f}"
-    os.makedirs(dir_res, exist_ok=True)
+    # dir_res = f"Re{Re:.0f}"
+    # dir_res = f"Re{Re:.0f}_dx{dx:.0e}"
+    # os.makedirs(dir_res, exist_ok=True)
 
     # domain
     Lx, Ly, Lz = 1., 1., 1.
@@ -258,55 +331,53 @@ def main():
     # exit()
     Nx, Ny, Nz = len(x), len(y), len(z)
     X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
-    # print(X[:,0,0] == x)
-    # print(Y[0,:,0] == y)
-    # print(Z[0,0,:] == z)
+    # print(X.shape, Y.shape, Z.shape)
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(X, Y, Z)
-    ax.set(
-        xlabel=r"$x$",
-        ylabel=r"$y$",
-        zlabel=r"$z$",
-    )
-    plt.tight_layout()
-    plt.savefig(os.path.join(dir_res, f"nodes.png"))
-    plt.close()
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111, projection="3d")
+    # ax.scatter(X, Y, Z)
+    # ax.set(
+    #     xlabel=r"$x$",
+    #     ylabel=r"$y$",
+    #     zlabel=r"$z$",
+    # )
+    # plt.tight_layout()
+    # plt.savefig(os.path.join(dir_res, f"nodes.png"))
+    # plt.close()
 
-    plt.figure()
-    plt.subplot(3, 3, 1)
-    plt.scatter(X[0,:,:], Y[0,:,:])
-    plt.title("X[0,:,:], Y[0,:,:]")
-    plt.subplot(3, 3, 2)
-    plt.scatter(X[:,0,:], Y[:,0,:])
-    plt.title("X[:,0,:], Y[:,0,:]")
-    plt.subplot(3, 3, 3)
-    plt.scatter(X[:,:,0], Y[:,:,0])
-    plt.title("X[:,:,0], Y[:,:,0]")
+    # plt.figure()
+    # plt.subplot(3, 3, 1)
+    # plt.scatter(X[0,:,:], Y[0,:,:])
+    # plt.title("X[0,:,:], Y[0,:,:]")
+    # plt.subplot(3, 3, 2)
+    # plt.scatter(X[:,0,:], Y[:,0,:])
+    # plt.title("X[:,0,:], Y[:,0,:]")
+    # plt.subplot(3, 3, 3)
+    # plt.scatter(X[:,:,0], Y[:,:,0])
+    # plt.title("X[:,:,0], Y[:,:,0]")
 
-    plt.subplot(3, 3, 1+3)
-    plt.scatter(Y[0,:,:], Z[0,:,:])
-    plt.title("Y[0,:,:], Z[0,:,:]")
-    plt.subplot(3, 3, 2+3)
-    plt.scatter(Y[:,0,:], Z[:,0,:])
-    plt.title("Y[:,0,:], Z[:,0,:]")
-    plt.subplot(3, 3, 3+3)
-    plt.scatter(Y[:,:,0], Z[:,:,0])
-    plt.title("Y[:,:,0], Z[:,:,0]")
+    # plt.subplot(3, 3, 1+3)
+    # plt.scatter(Y[0,:,:], Z[0,:,:])
+    # plt.title("Y[0,:,:], Z[0,:,:]")
+    # plt.subplot(3, 3, 2+3)
+    # plt.scatter(Y[:,0,:], Z[:,0,:])
+    # plt.title("Y[:,0,:], Z[:,0,:]")
+    # plt.subplot(3, 3, 3+3)
+    # plt.scatter(Y[:,:,0], Z[:,:,0])
+    # plt.title("Y[:,:,0], Z[:,:,0]")
 
-    plt.subplot(3, 3, 1+6)
-    plt.scatter(Z[0,:,:], X[0,:,:])
-    plt.title("Z[0,:,:], X[0,:,:]")
-    plt.subplot(3, 3, 2+6)
-    plt.scatter(Z[:,0,:], X[:,0,:])
-    plt.title("Z[:,0,:], X[:,0,:]")
-    plt.subplot(3, 3, 3+6)
-    plt.scatter(Z[:,:,0], X[:,:,0])
-    plt.title("Z[:,:,0], X[:,:,0]")
-    plt.tight_layout()
-    plt.savefig(os.path.join(dir_res, f"table.png"))
-    plt.close()
+    # plt.subplot(3, 3, 1+6)
+    # plt.scatter(Z[0,:,:], X[0,:,:])
+    # plt.title("Z[0,:,:], X[0,:,:]")
+    # plt.subplot(3, 3, 2+6)
+    # plt.scatter(Z[:,0,:], X[:,0,:])
+    # plt.title("Z[:,0,:], X[:,0,:]")
+    # plt.subplot(3, 3, 3+6)
+    # plt.scatter(Z[:,:,0], X[:,:,0])
+    # plt.title("Z[:,:,0], X[:,:,0]")
+    # plt.tight_layout()
+    # plt.savefig(os.path.join(dir_res, f"table.png"))
+    # plt.close()
 
     # timestep
     M = 3                        # spatial dimension
@@ -324,6 +395,7 @@ def main():
     w = np.zeros(shape=(Nz, Ny, Nx)) + 1e-9
     p = np.zeros(shape=(Nz-1, Ny-1, Nx-1)) + 1e-9
     b = np.zeros(shape=(Nz-1, Ny-1, Nx-1)) + 1e-9
+    # print(f"u.shape: {u.shape}, v.shape: {v.shape}, w.shape: {w.shape}, p.shape: {p.shape}")
 
     u_tol = args.u_tol    # convergence tolerance for velocity
     p_tol = args.p_tol    # convergence tolerance for pressure
@@ -336,8 +408,13 @@ def main():
     df_Jiang = pd.DataFrame(ref_Jiang)
     df_Wong = pd.DataFrame(ref_Wong)
 
+    # dt = 5e-4
+    dt = 1e-4   # only for dx=5e-3
+
     # figure directory
-    dir_res = Path(f"Re{Re:.0f}")
+    # dir_res = Path(f"test")
+    dir_res = Path(f"Re{Re:.0f}_dx{dx:.0e}_Cs{args.Cs:.2f}_tol{u_tol:.0e}")
+    dir_res = Path(f"Re{Re:.0f}_Unif_dx{dx:.0e}_dt{dt:.0e}_Cs{args.Cs:.2f}_tol{u_tol:.0e}")   # for code verification
     dir_vel = dir_res / "velocity"
     dir_prs = dir_res / "pressure"
     dir_vel_slc = dir_res / "velocity_slice"
@@ -359,9 +436,19 @@ def main():
     dir_vtk = dir_res / "vtk"
     dir_vtk.mkdir(exist_ok=True)
 
+    # # prepare coefficient matrix for PPE
+    # A = build_coef_mat(Nx, Ny, Nz, dx, dy, dz)
+    # print(">>> Coefficient matrix for PPE:")
+    # print(A.shape)
+    # # exit()
+
+    DOF = len(u.flatten()) + len(v.flatten()) + len(w.flatten()) + len(p.flatten())
+
     # main loop
     n = 0
     t = 0.
+    n = n - 1
+    t = t - dt
     u_res = 9999.
     while u_res > u_tol:
         # previous velocity
@@ -392,8 +479,15 @@ def main():
         # source term for PPE (for Arakawa B-type grid)
         b, div_u_hat = get_source(u_hat, v_hat, w_hat, dx, dy, dz, dt, b)
 
-        # solve PPE
+        # # solve PPE
         p = Jacobi(p, b, dx, dy, dz, Nx, Ny, Nz, it_max, p_tol)
+        # print(p.shape)
+
+        # # solve PPE with conjugate gradient method
+        # B = build_src_vec(b, Nx, Ny, Nz)
+        # P = solve_ppe(A, B)
+        # p = P.reshape((Nz-1, Ny-1, Nx-1))
+        # print(p.shape)
 
         # pressure gradient (for Arakawa B-type grid)
         p_x, p_y, p_z = get_pressure_gradient(p, dx, dy, dz)
@@ -415,9 +509,9 @@ def main():
         u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = 1., 0., 0.   # z = zmax plane
         u[:, :,  :2], v[:, :,  :2], w[:, :,  :2] = 0., 0., 0.   # z = zmin plane
 
-        # parabola
-        U = (X - 0.) * (1. - X) * (Y - 0.) * (1. - Y)
-        U /= U.max()
+        # # parabola
+        # U = (X - 0.) * (1. - X) * (Y - 0.) * (1. - Y)
+        # U /= U.max()
         # u[:, :, -2:], v[:, :, -2:], w[:, :, -2:] = U[:, :, -2:], 0., 0.   # z = zmax plane
 
         # converged?
@@ -428,18 +522,47 @@ def main():
         u_res = np.sqrt(np.sum((u - u_old)**2)) / np.sqrt(np.sum(u_old**2))
         v_res = np.sqrt(np.sum((v - v_old)**2)) / np.sqrt(np.sum(v_old**2))
         w_res = np.sqrt(np.sum((w - w_old)**2)) / np.sqrt(np.sum(w_old**2))
+
+        # velocity at geometric center
+        u_geo1 = u[Nz//2, Ny//2, Nx//2]
+        v_geo1 = v[Nz//2, Ny//2, Nx//2]
+        w_geo1 = w[Nz//2, Ny//2, Nx//2]
+
+        x_geo1 = X[Nz//2, Ny//2, Nx//2]
+        y_geo1 = Y[Nz//2, Ny//2, Nx//2]
+        z_geo1 = Z[Nz//2, Ny//2, Nx//2]
+
+
+        u_geo2 = u[Nz//2-1, Ny//2-1, Nx//2-1]
+        v_geo2 = v[Nz//2-1, Ny//2-1, Nx//2-1]
+        w_geo2 = w[Nz//2-1, Ny//2-1, Nx//2-1]
+
+        x_geo2 = X[Nz//2-1, Ny//2-1, Nx//2-1]
+        y_geo2 = Y[Nz//2-1, Ny//2-1, Nx//2-1]
+        z_geo2 = Z[Nz//2-1, Ny//2-1, Nx//2-1]
+
         print(f"\n****************************************************************")
         print(f">>> main")
-        print(f">>> it: {n:d}, t: {t:.3f}/{args.time:.3f}, dx: {dx:.3e}, dt: {dt:.3e}, C: {np.max(C):.3f}, D: {np.max(D):.3f}")
+        print(f">>> it: {n:d}, t: {t:.3f}/{args.time:.3f}, dx: {dx:.3e}, dt: {dt:.3e}, C: {np.max(C):.3f}, D: {np.max(D):.3f}, DOF: {DOF:d}")
         print(f">>> Reynolds number: {Re:.3e}, Cs: {args.Cs:.3f}")
         print(f">>> u_res: {u_res:.6e}, v_res: {v_res:.6e}, w_res: {w_res:.6e}")
+
+        print(f">>> u_geo1: {u_geo1:.6e}, v_geo1: {v_geo1:.6e}, w_geo1: {w_geo1:.6e}")
+        print(f">>> x_geo1: {x_geo1:.6e}, y_geo1: {y_geo1:.6e}, z_geo1: {z_geo1:.6e}")
+
+        print(f">>> u_geo2: {u_geo2:.6e}, v_geo2: {v_geo2:.6e}, w_geo2: {w_geo2:.6e}")
+        print(f">>> x_geo2: {x_geo2:.6e}, y_geo2: {y_geo2:.6e}, z_geo2: {z_geo2:.6e}")
         print(f"****************************************************************")
         u_res = max(u_res, v_res, w_res)
         if u_res < u_tol:
             print("   >>> main converged")
+            end_time = time.perf_counter()
+            print(f"   >>> total time: {end_time - start_time:.3f} seconds")
             break
-        if t > args.time:
+        if t > args.time + dt:
             print("   >>> taking too long, terminating now...")
+            end_time = time.perf_counter()
+            print(f"   >>> total time: {end_time - start_time:.3f} seconds")
             break
 
         # plot
@@ -491,7 +614,7 @@ def main():
             plt.close(fig)
 
 
-            fig, ax = plt.subplots(1, 3, figsize=(15, 4), subplot_kw={"projection": "3d"})
+            fig, ax = plt.subplots(1, 3, figsize=(21, 5), subplot_kw={"projection": "3d"})
 
             cntr = ax[0].scatter(
                 X[1:-1, 1:-1, 1:Nz//2], Y[1:-1, 1:-1, 1:Nz//2], Z[1:-1, 1:-1, 1:Nz//2],
@@ -548,11 +671,13 @@ def main():
             ax = fig.add_subplot(111, projection="3d")
             Xp, Yp, Zp = X[:-1, :-1, :-1] + dx / 2., Y[:-1, :-1, :-1] + dy / 2., Z[:-1, :-1, :-1] + dz / 2.
             p_bar = p - np.mean(p)
+            vmin, vmax = np.min(p_bar), np.max(p_bar)
             cntr = ax.scatter(
                 Xp[:,Ny//2:,:], Yp[:,Ny//2:,:], Zp[:,Ny//2:,:],
                 c=p_bar[:,Ny//2:,:],
-                vmin=-.02, vmax=.02, cmap="turbo", marker="."
+                vmin=vmin, vmax=vmax, cmap="turbo", marker="."
             )
+            cbar = fig.colorbar(cntr, shrink=.5, aspect=15)
             # cntr = ax.scatter(
             #     Xp, Yp, Zp, 
             #     c=p_bar,
@@ -575,16 +700,21 @@ def main():
 
 
             # velocity at the geometric center
-            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+            fig, ax = plt.subplots(1, 3, figsize=(21, 5))
 
-            levels = np.linspace(0., 1., 64)
+            levels = np.linspace(0., 1., 32)
             ticks = np.linspace(0., 1., 5)
-            cf = ax[0].contourf(
+            cf = ax[2].contourf(
                 X[1:-1, 1:-1, Nz//2], Y[1:-1, 1:-1, Nz//2], vel_norm[1:-1, 1:-1, Nz//2],
                 cmap="turbo", levels=levels, extend="both"
             )
-            fig.colorbar(cf, ticks=ticks, ax=ax[0])
-            ax[0].set(
+            fig.colorbar(cf, ticks=ticks, ax=ax[2])
+            # qv = ax[2].quiver(
+            #     X[1:-1:10, 1:-1:10, Nz//2], Y[1:-1:10, 1:-1:10, Nz//2],
+            #     u[1:-1:10, 1:-1:10, Nz//2], v[1:-1:10, 1:-1:10, Nz//2],
+            #     color="w",
+            # )
+            ax[2].set(
                 xticks=np.linspace(0., Lx, 5),
                 yticks=np.linspace(0., Ly, 5),
                 xlim=(0., Lx),
@@ -600,6 +730,11 @@ def main():
                 cmap="turbo", levels=levels, extend="both"
             )
             fig.colorbar(cf, ticks=ticks, ax=ax[1])
+            # qv = ax[1].quiver(
+            #     X[1:-1:10, Ny//2, 1:-1:10], Z[1:-1:10, Ny//2, 1:-1:10],
+            #     u[1:-1:10, Ny//2, 1:-1:10], w[1:-1:10, Ny//2, 1:-1:10],
+            #     color="w",
+            # )
             ax[1].set(
                 xticks=np.linspace(0., Lx, 5),
                 yticks=np.linspace(0., Lz, 5),
@@ -611,12 +746,17 @@ def main():
                 aspect="equal",
             )
 
-            cf = ax[2].contourf(
+            cf = ax[0].contourf(
                 Y[Nx//2, 1:-1, 1:-1], Z[Nx//2, 1:-1, 1:-1], vel_norm[Nx//2, 1:-1, 1:-1],
                 cmap="turbo", levels=levels, extend="both"
             )
-            fig.colorbar(cf, ticks=ticks, ax=ax[2])
-            ax[2].set(
+            fig.colorbar(cf, ticks=ticks, ax=ax[0])
+            # qv = ax[0].quiver(
+            #     Y[Nx//2, 1:-1:10, 1:-1:10], Z[Nx//2, 1:-1:10, 1:-1:10],
+            #     v[Nx//2, 1:-1:10, 1:-1:10], w[Nx//2, 1:-1:10, 1:-1:10],
+            #     color="w",
+            # )
+            ax[0].set(
                 xticks=np.linspace(0., Ly, 5),
                 yticks=np.linspace(0., Lz, 5),
                 xlim=(0., Ly),
@@ -635,18 +775,19 @@ def main():
 
 
             # pressure at the geometric center
-            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+            fig, ax = plt.subplots(1, 3, figsize=(21, 5))
 
-            p_lim = .02
-            levels = np.linspace(-p_lim, p_lim, 64)
+            p_lim = .1
+            levels = np.linspace(-p_lim, p_lim, 32)
             ticks = np.linspace(-p_lim, p_lim, 5)
 
-            cf = ax[0].contourf(
-                Xp[1:-1, 1:-1, Nz//2], Yp[1:-1, 1:-1, Nz//2], p[1:-1, 1:-1, Nz//2],
-                cmap="turbo", levels=levels, extend="both"
+            cf = ax[2].contourf(
+                # Xp[1:-1, 1:-1, Nz//2], Yp[1:-1, 1:-1, Nz//2], p[1:-1, 1:-1, Nz//2],
+                Xp[:, :, Nz//2], Yp[:, :, Nz//2], p[:, :, Nz//2],
+                cmap="seismic", levels=levels, extend="both"
             )
-            fig.colorbar(cf, ticks=ticks, ax=ax[0])
-            ax[0].set(
+            fig.colorbar(cf, ticks=ticks, ax=ax[2])
+            ax[2].set(
                 xticks=np.linspace(0., Lx, 5),
                 yticks=np.linspace(0., Ly, 5),
                 xlim=(0., Lx),
@@ -658,8 +799,9 @@ def main():
             )
 
             cf = ax[1].contourf(
-                Xp[1:-1, Ny//2, 1:-1], Zp[1:-1, Ny//2, 1:-1], p[1:-1, Ny//2, 1:-1],
-                cmap="turbo", levels=levels, extend="both"
+                # Xp[1:-1, Ny//2, 1:-1], Zp[1:-1, Ny//2, 1:-1], p[1:-1, Ny//2, 1:-1],
+                Xp[:, Ny//2, :], Zp[:, Ny//2, :], p[:, Ny//2, :],
+                cmap="seismic", levels=levels, extend="both"
             )
             fig.colorbar(cf, ticks=ticks, ax=ax[1])
             ax[1].set(
@@ -673,12 +815,13 @@ def main():
                 aspect="equal",
             )
 
-            cf = ax[2].contourf(
-                Yp[Nx//2, 1:-1, 1:-1], Zp[Nx//2, 1:-1, 1:-1], p[Nx//2, 1:-1, 1:-1],
-                cmap="turbo", levels=levels, extend="both"
+            cf = ax[0].contourf(
+                # Yp[Nx//2, 1:-1, 1:-1], Zp[Nx//2, 1:-1, 1:-1], p[Nx//2, 1:-1, 1:-1],
+                Yp[Nx//2, :, :], Zp[Nx//2, :, :], p[Nx//2, :, :],
+                cmap="seismic", levels=levels, extend="both"
             )
-            fig.colorbar(cf, ticks=ticks, ax=ax[2])
-            ax[2].set(
+            fig.colorbar(cf, ticks=ticks, ax=ax[0])
+            ax[0].set(
                 xticks=np.linspace(0., Ly, 5),
                 yticks=np.linspace(0., Lz, 5),
                 xlim=(0., Ly),
@@ -695,8 +838,76 @@ def main():
             fig.savefig(dir_prs_slc / f"prs_slice_{n:06d}.png")
             plt.close(fig)
 
+            # map pressure to velocity node
+            p_map = np.zeros(shape=(Nx-2, Ny-2, Nz-2))
+            p_map[:, :, :] = (
+                p[:-1, :-1, :-1] + p[1:, :-1, :-1]
+                + p[:-1, 1:, :-1] + p[:-1, :-1, 1:]
+                + p[1:, 1:, :-1] + p[1:, :-1, 1:]
+                + p[:-1, 1:, 1:] + p[1:, 1:, 1:]
+            ) / 8.
+            p_map = p_map - np.mean(p_map)
 
-            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+            fig, ax = plt.subplots(1, 3, figsize=(21, 5))
+            p_lim = .1
+            levels = np.linspace(-p_lim, p_lim, 32)
+            ticks = np.linspace(-p_lim, p_lim, 5)
+            cf = ax[2].contourf(
+                X[1:-1, 1:-1, Nz//2], Y[1:-1, 1:-1, Nz//2], p_map[:, :, Nz//2],
+                cmap="seismic", levels=levels, extend="both"
+            )
+            fig.colorbar(cf, ticks=ticks, ax=ax[2])
+            ax[2].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Ly, 5),
+                xlim=(0., Lx),
+                ylim=(0., Ly),
+                xlabel=r"$x$",
+                ylabel=r"$y$",
+                title=rf"$z={Lz/2:.2f}$ plane",
+                aspect="equal",
+            )
+
+            cf = ax[1].contourf(
+                X[1:-1, Ny//2, 1:-1], Z[1:-1, Ny//2, 1:-1], p_map[:, Ny//2, :],
+                cmap="seismic", levels=levels, extend="both"
+            )
+            fig.colorbar(cf, ticks=ticks, ax=ax[1])
+            ax[1].set(
+                xticks=np.linspace(0., Lx, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlabel=r"$x$",
+                ylabel=r"$z$",
+                xlim=(0., Lx),
+                ylim=(0., Lz),
+                title=rf"$y={Ly/2:.2f}$ plane",
+                aspect="equal",
+            )
+
+            cf = ax[0].contourf(
+                Y[Nx//2, 1:-1, 1:-1], Z[Nx//2, 1:-1, 1:-1], p_map[Nx//2, :, :],
+                cmap="seismic", levels=levels, extend="both"
+            )
+            fig.colorbar(cf, ticks=ticks, ax=ax[0])
+            ax[0].set(
+                xticks=np.linspace(0., Ly, 5),
+                yticks=np.linspace(0., Lz, 5),
+                xlim=(0., Ly),
+                ylim=(0., Lz),
+                xlabel=r"$y$",
+                ylabel=r"$z$",
+                title=rf"$x={Lx/2:.2f}$ plane",
+                aspect="equal",
+            )
+
+            fig.suptitle(rf"$t = {t:.3f} \ [\text{{s}}]$",)
+            fig.tight_layout()
+            fig.savefig(dir_res / f"prs_map_slice.png")
+            fig.savefig(dir_prs_slc / f"prs_map_slice_{n:06d}.png")
+            plt.close(fig)
+
+
+            fig, ax = plt.subplots(1, 3, figsize=(21, 5))
             ticks = np.linspace(0., 1., 5)
             step = Nx // 20
             u_norm = u / vel_norm
@@ -708,7 +919,7 @@ def main():
                 vel_norm[1:-1:step, 1:-1:step, Nz//2],
                 cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
             )
-            fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[0])
+            # fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[0])
             ax[0].set(
                 xticks=np.linspace(0., Lx, 5),
                 yticks=np.linspace(0., Ly, 5),
@@ -720,12 +931,12 @@ def main():
                 aspect="equal",
             )
 
-            qv = ax[1].quiver(
-                X[1:-1:step, Ny//2, 1:-1:step], Z[1:-1:step, Ny//2, 1:-1:step],
-                u_norm[1:-1:step, Ny//2, 1:-1:step], w_norm[1:-1:step, Ny//2, 1:-1:step],
-                vel_norm[1:-1:step, Ny//2, 1:-1:step],
-                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
-            )
+            # qv = ax[1].quiver(
+            #     X[1:-1:step, Ny//2, 1:-1:step], Z[1:-1:step, Ny//2, 1:-1:step],
+            #     u_norm[1:-1:step, Ny//2, 1:-1:step], w_norm[1:-1:step, Ny//2, 1:-1:step],
+            #     vel_norm[1:-1:step, Ny//2, 1:-1:step],
+            #     cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            # )
             fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[1])
             ax[1].set(
                 xticks=np.linspace(0., Lx, 5),
@@ -738,12 +949,12 @@ def main():
                 aspect="equal",
             )
 
-            qv = ax[2].quiver(
-                Y[Nx//2, 1:-1:step, 1:-1:step], Z[Nx//2, 1:-1:step, 1:-1:step],
-                v_norm[Nx//2, 1:-1:step, 1:-1:step], w_norm[Nx//2, 1:-1:step, 1:-1:step],
-                vel_norm[Nx//2, 1:-1:step, 1:-1:step],
-                cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
-            )
+            # qv = ax[2].quiver(
+            #     Y[Nx//2, 1:-1:step, 1:-1:step], Z[Nx//2, 1:-1:step, 1:-1:step],
+            #     v_norm[Nx//2, 1:-1:step, 1:-1:step], w_norm[Nx//2, 1:-1:step, 1:-1:step],
+            #     vel_norm[Nx//2, 1:-1:step, 1:-1:step],
+            #     cmap="turbo", pivot="tail", units="xy", clim=(0., 1.)
+            # )
             fig.colorbar(qv, ticks=ticks, extend="both", ax=ax[2])
             ax[2].set(
                 xticks=np.linspace(0., Ly, 5),
@@ -770,7 +981,7 @@ def main():
                     - (w[2:, 1:-1, 1:-1] - w[:-2, 1:-1, 1:-1]) / (2. * dx)
             vor_z = (v[2:, 1:-1, 1:-1] - v[:-2, 1:-1, 1:-1]) / (2. * dx) \
                     - (u[1:-1, 2:, 1:-1] - u[1:-1, :-2, 1:-1]) / (2. * dy)
-            fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+            fig, ax = plt.subplots(1, 3, figsize=(21, 5))
             levels = np.linspace(-5., 5., 32)
             ticks = np.linspace(-5., 5., 5)
             cf = ax[0].contourf(
@@ -830,7 +1041,7 @@ def main():
 
             fig = plt.figure()
             ax = fig.add_subplot(111, projection="3d")
-            levels = np.linspace(0., 1., 64)
+            levels = np.linspace(0., 1., 32)
             ticks = np.linspace(0., 1., 5)
             # plot projections of the contours for each dimension
             # by choosing offsets that match the appropriate axes limits
@@ -887,28 +1098,50 @@ def main():
                 plt.close(fig)
 
             # save
+            # interpolate pressure to cell centers
+            p_npz = np.zeros(shape=(Nx-2, Ny-2, Nz-2))
+            p_npz[:, :, :] = (
+                p[:-1, :-1, :-1] + p[1:, :-1, :-1]
+                + p[:-1, 1:, :-1] + p[:-1, :-1, 1:]
+                + p[1:, 1:, :-1] + p[1:, :-1, 1:]
+                + p[:-1, 1:, 1:] + p[1:, 1:, 1:]
+            ) / 8.
+            p_bar_npz = p_npz - np.mean(p_npz)
+
             np.savez(
                 dir_npz / f"data_it{n:06d}.npz",
                 x=x, y=y, z=z,
                 X=X, Y=Y, Z=Z,
                 u=u, v=v, w=w,
-                p=p, p_bar=p_bar,
+                # p=p, p_bar=p_bar,
+                p=p_npz, p_bar=p_bar_npz,
                 dt=dt, t=t
             )
-            # # save as vtk
-            # pyevtk.hl.gridToVTK(
-            #     dir_vtk / f"data_it{n:06d}.vtk",
-            #     X[1:-1, 1:-1, 1:-1],
-            #     Y[1:-1, 1:-1, 1:-1],
-            #     Z[1:-1, 1:-1, 1:-1],
-            #     pointData={
-            #         "u": u[1:-1, 1:-1, 1:-1],
-            #         "v": v[1:-1, 1:-1, 1:-1],
-            #         "w": w[1:-1, 1:-1, 1:-1],
-            #         "p": p,
-            #         "p_bar": p_bar,
-            #     }
-            # )
+            # save as vtk
+            x_vtk = np.ascontiguousarray(X[1:-1, 1:-1, 1:-1].flatten())
+            y_vtk = np.ascontiguousarray(Y[1:-1, 1:-1, 1:-1].flatten())
+            z_vtk = np.ascontiguousarray(Z[1:-1, 1:-1, 1:-1].flatten())
+            u_vtk = np.ascontiguousarray(u[1:-1, 1:-1, 1:-1].flatten())
+            v_vtk = np.ascontiguousarray(v[1:-1, 1:-1, 1:-1].flatten())
+            w_vtk = np.ascontiguousarray(w[1:-1, 1:-1, 1:-1].flatten())
+            p_vtk = np.zeros(shape=(Nx-2, Ny-2, Nz-2))
+            p_vtk[:, :, :] = (
+                p[:-1, :-1, :-1] + p[1:, :-1, :-1]
+                + p[:-1, 1:, :-1] + p[:-1, :-1, 1]
+                + p[1:, 1:, :-1] + p[1:, :-1, 1]
+                + p[:-1, 1:, 1] + p[1:, 1:, 1]
+            ) / 8.
+            p_vtk = p_vtk - np.mean(p_vtk)
+            p_vtk = np.ascontiguousarray(p_vtk.flatten())
+            fname_vtk = (dir_vtk / f"data_it{n:06d}").as_posix()
+            pyevtk.hl.pointsToVTK(
+                fname_vtk,
+                x_vtk, y_vtk, z_vtk,
+                data = {
+                    "Velocity": (u_vtk, v_vtk, w_vtk),
+                    "Pressure": p_vtk,
+                }
+            )
 
 
 ################################################################################
